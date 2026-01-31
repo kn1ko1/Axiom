@@ -1,62 +1,96 @@
 import os
-import time
 import csv
+import time
+import json
+import argparse
 from engine import AxiomEngine
 
-RESUME_DIR = './resumes/'
-LEADERBOARD = 'leaderboard.csv'
-JD_PATH = 'job_description.txt'  # You can change this if needed
+# --- CONFIGURATION ---
+RESUMES_DIR = "./resumes"
+OUTPUT_FILE = "axiom_leaderboard.csv"
 MAX_RETRIES = 5
-BACKOFF_BASE = 5  # seconds
+RETRY_WAIT = 30  # seconds
+THROTTLE = 2     # seconds between successful calls
 
-# Load job description
-if not os.path.exists(JD_PATH):
-    raise FileNotFoundError(f"Job description file '{JD_PATH}' not found.")
-with open(JD_PATH, 'r', encoding='utf-8') as f:
-    job_description = f.read().strip()
+def load_job_description(jd_path=None, default_jd=None):
+    if jd_path:
+        if not os.path.isfile(jd_path):
+            raise ValueError(f"Job description path '{jd_path}' is not a file.")
+        with open(jd_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    if default_jd:
+        return default_jd
+    raise ValueError("No job description provided.")
 
-engine = AxiomEngine()
-results = []
+def analyze_resume(axiom, filename, job_description):
+    path = os.path.join(RESUMES_DIR, filename)
+    print(f"🔍 Analyzing: {filename}...", end=" ", flush=True)
 
-for filename in os.listdir(RESUME_DIR):
-    if not filename.lower().endswith('.pdf'):
-        continue
-    pdf_path = os.path.join(RESUME_DIR, filename)
-    print(f"Processing: {filename}")
+    # Extract text
+    text = axiom.extract_text(path)
+    if "ERROR" in text:
+        print("❌ Extraction Failed.")
+        return {
+            "name": filename,
+            "score": 0,
+            "rationale": "Extraction Failed."
+        }
+
+    # Get Verdict with Retries for Rate Limits
     retries = 0
-    while retries <= MAX_RETRIES:
-        text = engine.extract_text(pdf_path)
+    while retries < MAX_RETRIES:
         try:
-            verdict = engine.quick_sweep(text, job_description)
-            # Try to parse JSON result
-            import json
-            data = json.loads(verdict)
-            score = data.get('score', 0)
-            rationale = data.get('rationale', 'No rationale provided.')
-            results.append({'filename': filename, 'score': score, 'rationale': rationale})
-            break  # Success, move to next file
+            raw_response = axiom.quick_sweep(text, job_description)
+            verdict = json.loads(raw_response)
+            print(f"✅ Scored {verdict.get('score')}")
+            time.sleep(THROTTLE)
+            return {
+                "name": filename,
+                "score": verdict.get("score", 0),
+                "rationale": verdict.get("rationale", "N/A")
+            }
         except Exception as e:
-            # Check for quota/rate limit error
-            if 'RESOURCE_EXHAUSTED' in str(e) or 'quota' in str(e) or '429' in str(e):
-                wait_time = BACKOFF_BASE * (2 ** retries)
-                print(f"429/Quota error. Backing off for {wait_time}s (attempt {retries+1}/{MAX_RETRIES})...")
-                time.sleep(wait_time)
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 retries += 1
+                print(f"🚩 Rate limit hit. Cooling down for {RETRY_WAIT}s... (Retry {retries}/{MAX_RETRIES})")
+                time.sleep(RETRY_WAIT)
             else:
-                print(f"Error processing {filename}: {e}")
-                results.append({'filename': filename, 'score': 0, 'rationale': f'Error: {e}'})
+                print(f"❌ Failed: {str(e)}")
                 break
-    else:
-        print(f"Max retries exceeded for {filename}. Skipping.")
-        results.append({'filename': filename, 'score': 0, 'rationale': 'Max retries exceeded.'})
+    print(f"❌ Max retries exceeded for {filename}.")
+    return {
+        "name": filename,
+        "score": 0,
+        "rationale": "Max retries exceeded or unknown error."
+    }
 
-# Sort leaderboard by score descending
-results.sort(key=lambda x: x['score'], reverse=True)
+def run_scouter(job_description):
+    axiom = AxiomEngine()
+    results = []
 
-with open(LEADERBOARD, 'w', newline='', encoding='utf-8') as csvfile:
-    writer = csv.DictWriter(csvfile, fieldnames=['filename', 'score', 'rationale'])
-    writer.writeheader()
-    for row in results:
-        writer.writerow(row)
+    # 1. Gather all PDFs
+    files = [f for f in os.listdir(RESUMES_DIR) if f.lower().endswith('.pdf')]
+    print(f"🚀 Axiom Batch Scouter: Found {len(files)} resumes to audit.")
 
-print(f"Leaderboard written to {LEADERBOARD}")
+    for filename in files:
+        result = analyze_resume(axiom, filename, job_description)
+        results.append(result)
+
+    # 2. Sort and Save (Leaderboard Logic)
+    results.sort(key=lambda x: x['score'], reverse=True)
+
+    with open(OUTPUT_FILE, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=["name", "score", "rationale"])
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\n🏆 Batch Complete! Leaderboard saved to {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Axiom Batch Scouter")
+    parser.add_argument('--jd', type=str, help="Path to job description text file.")
+    parser.add_argument('--jd-text', type=str, help="Job description as a string (overrides file).")
+    args = parser.parse_args()
+
+    job_description = load_job_description(args.jd, args.jd_text)
+    run_scouter(job_description)

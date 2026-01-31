@@ -1,7 +1,6 @@
 import os
 import csv
 import time
-import json
 import argparse
 from engine import AxiomEngine
 
@@ -37,6 +36,8 @@ def analyze_resume(axiom, filename, job_description):
         }
 
     # Get Verdict with Retries for Rate Limits
+    # NOTE: The prompt explicitly demands the 'investigation_required' key in the JSON output.
+    # This ensures every result is machine-usable and missing eligibility data is always flagged for recruiters.
     retries = 0
     while retries < MAX_RETRIES:
         try:
@@ -47,7 +48,9 @@ def analyze_resume(axiom, filename, job_description):
             return {
                 "name": filename,
                 "score": verdict.get("score", 0),
-                "rationale": verdict.get("rationale", "N/A")
+                "rationale": verdict.get("rationale", "N/A"),
+                "investigation": verdict.get("investigation_required", "N/A"),
+                "tech_level": verdict.get("technical_match", "N/A")
             }
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
@@ -64,26 +67,25 @@ def analyze_resume(axiom, filename, job_description):
         "rationale": "Max retries exceeded or unknown error."
     }
 
-def run_scouter(job_description):
-    axiom = AxiomEngine()
+
+def process_files(axiom, files, job_description):
     results = []
-
-    # 1. Gather all PDFs
-    files = [f for f in os.listdir(RESUMES_DIR) if f.lower().endswith('.pdf')]
-    print(f"🚀 Axiom Batch Scouter: Found {len(files)} resumes to audit.")
-
     for filename in files:
         result = analyze_resume(axiom, filename, job_description)
         results.append(result)
+    return results
 
-    # 2. Sort and Save (Leaderboard Logic)
+def run_scouter(job_description):
+    axiom = AxiomEngine()
+    files = [f for f in os.listdir(RESUMES_DIR) if f.lower().endswith('.pdf')]
+    print(f"🚀 Axiom Batch Scouter: Found {len(files)} resumes to audit.")
+    results = process_files(axiom, files, job_description)
     results.sort(key=lambda x: x['score'], reverse=True)
-
     with open(OUTPUT_FILE, mode='w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=["name", "score", "rationale"])
+        fieldnames = ["name", "score", "rationale", "investigation", "tech_level"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
-
     print(f"\n🏆 Batch Complete! Leaderboard saved to {OUTPUT_FILE}")
 
 if __name__ == "__main__":

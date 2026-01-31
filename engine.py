@@ -36,13 +36,23 @@ class AxiomEngine:
         )
 
         prompt = f"""
-        Act as a brutal, cynical headhunter. 
-        Rank this candidate against the JD. 
-        Output ONLY a JSON object: {{"score": 1-100, "rationale": "one blunt sentence"}}.
-        
-        JD: {jd}
-        RESUME: {resume_text}
-        """
+Act as a cynical FCDO Lead Investigator. Audit the candidate against the provided Job Description (JD) below.
+
+SCORING RULES:
+1. Technical DNA (ITIL, RCA, Incident Mgmt) is 80% of the score.
+2. If Technical DNA is strong but Residency/Citizenship is UNKNOWN, do NOT fail them. Use the 'investigation_required' field.
+
+Output ONLY JSON:
+{{
+    "score": 1-100,
+    "rationale": "One blunt sentence.",
+    "investigation_required": "List specific missing eligibility data (e.g. 'Verify British Citizenship') or 'None'.",
+    "technical_match": "High/Medium/Low"
+}}
+
+JD: {jd}
+RESUME: {resume_text}
+"""
         
         response = self.client.models.generate_content(
             model=self.model_id,
